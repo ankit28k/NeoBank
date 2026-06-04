@@ -1,0 +1,91 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  background: #020617;
+  color: #e2e8f0;
+  font-family: "Inter", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: #0a0f1e; }
+::-webkit-scrollbar-thumb { background: #334155; border-radius: 2px; }
+
+/* Glass card */
+.glass {
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(0, 212, 255, 0.08);
+  backdrop-filter: blur(12px);
+}
+
+/* Subtle grid background */
+.bg-grid {
+  background-image:
+    linear-gradient(rgba(0,212,255,0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,212,255,0.025) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* Monospace numbers */
+.font-num { font-family: "JetBrains Mono", monospace; font-variant-numeric: tabular-nums; }
+
+/* Animated trust bar */
+.trust-bar { transition: width 0.7s cubic-bezier(0.4,0,0.2,1), background-color 0.4s ease; }
+
+/* Input */
+.neo-input {
+  background: rgba(15,23,42,0.9);
+  border: 1px solid rgba(51,65,85,0.8);
+  border-radius: 8px;
+  color: #e2e8f0;
+  padding: 11px 14px;
+  font-size: 14px;
+  font-family: "Inter", sans-serif;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  width: 100%;
+}
+.neo-input:focus {
+  border-color: rgba(0,212,255,0.5);
+  box-shadow: 0 0 0 3px rgba(0,212,255,0.07);
+}
+
+/* Primary button */
+.neo-btn {
+  background: #00d4ff;
+  color: #020617;
+  font-weight: 600;
+  font-family: "Syne", sans-serif;
+  padding: 11px 22px;
+  border-radius: 8px;
+  border: none;
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.1s, box-shadow 0.2s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 14px;
+}
+.neo-btn:hover  { opacity: 0.88; box-shadow: 0 0 20px rgba(0,212,255,0.28); }
+.neo-btn:active { transform: scale(0.98); }
+.neo-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* Ghost button */
+.neo-btn-ghost {
+  background: transparent;
+  color: #94a3b8;
+  border: 1px solid rgba(51,65,85,0.8);
+  padding: 9px 18px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s;
+  font-size: 14px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+}
+.neo-btn-ghost:hover { border-color: rgba(0,212,255,0.3); color: #e2e8f0; }

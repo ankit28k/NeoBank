@@ -1,0 +1,1 @@
+{"user_id": "6a21102c3c6d224ed089d50e", "trained_on": "2026-06-04T05:45:25.427647", "sessions": 15, "feature_dim": 22, "ensemble": "bagging(SVM) + bagging(ANN) + RandomForest"}
