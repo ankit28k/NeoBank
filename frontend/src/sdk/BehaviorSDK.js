@@ -11,6 +11,9 @@ export class BehaviorSDK {
     this.running      = false;
     this.flushTimer   = null;
 
+    this.keyCount     = 0;
+    this.sessionStart = null;
+
     // Keystroke tracking
     this.keyDownTimes    = {};
     this.lastKeyUpTime   = null;
@@ -85,12 +88,24 @@ export class BehaviorSDK {
     const now  = this._now();
     const down = this.keyDownTimes[e.key];
     if (!down) return;
-
+  
     const dwell  = now - down;
     const flight = this.lastKeyUpTime ? now - this.lastKeyUpTime : undefined;
-
+  
+    // Typing speed: chars typed per minute rolling count
+    this.keyCount = (this.keyCount || 0) + 1;
+    if (!this.sessionStart) this.sessionStart = now;
+    const elapsedMin = (now - this.sessionStart) / 60000;
+    const wpm = elapsedMin > 0 ? (this.keyCount / 5) / elapsedMin : 0; // 5 chars = 1 word
+  
     delete this.keyDownTimes[e.key];
-    this._push({ event_type: "keystroke", key: e.key, dwell_time: dwell, flight_time: flight });
+    this._push({
+      event_type:   "keystroke",
+      key:          e.key,
+      dwell_time:   dwell,
+      flight_time:  flight,
+      wpm:          wpm,
+    });
     this.lastKeyUpTime = now;
   }
 
@@ -136,12 +151,20 @@ export class BehaviorSDK {
 
   _onMouseDown(e) {
     this.clickDownTime = this._now();
+    // pressure: 0.5 is default for mouse, varies on trackpad/touch
+    this.clickPressure = e.pressure || (e.touches?.[0]?.force) || 0.5;
   }
-
+  
   _onMouseUp(e) {
     if (!this.clickDownTime) return;
     const now = this._now();
-    this._push({ event_type: "click", click_x: e.clientX, click_y: e.clientY, click_duration: now - this.clickDownTime });
+    this._push({
+      event_type:     "click",
+      click_x:        e.clientX,
+      click_y:        e.clientY,
+      click_duration: now - this.clickDownTime,
+      pressure:       this.clickPressure || 0.5,
+    });
     this.clickDownTime = null;
   }
 
@@ -162,10 +185,15 @@ export class BehaviorSDK {
         const score = await res.json();
         if (this.onScoreUpdate) this.onScoreUpdate(score);
 
-        // Force logout if score is critical
+        // Auto-logout on block, warn user on challenge
         if (score.action === "block") {
           localStorage.clear();
           window.location.href = "/login?reason=security";
+        } else if (score.action === "challenge") {
+          setTimeout(() => {
+            localStorage.clear();
+            window.location.href = "/login?reason=security";
+          }, 3000); // 3 second warning before logout
         }
       }
     } catch {

@@ -113,3 +113,10 @@ npm run dev                 # Vite on :3000, /api proxied to :8000
 | POST   | /api/behavior/train           | JWT  | Train ML model                |
 | GET    | /api/behavior/status          | JWT  | Sessions collected + trained? |
 | GET    | /api/behavior/score           | JWT  | Latest trust score            |
+
+
+# Terminal 1 — NeoBank 2 folder
+npm run dev
+
+# Terminal 2 — ml folder  
+python3 app.py

@@ -1,11 +1,27 @@
-import { Shield, ShieldAlert, ShieldCheck, ShieldX } from "lucide-react";
+import { Shield, ShieldAlert, ShieldCheck, ShieldX, ShieldQuestion } from "lucide-react";
 import { useBehavior } from "../context/BehaviorContext.jsx";
+import { Link } from "react-router-dom";
 
 export function TrustBadge() {
-  const { trustScore } = useBehavior();
+  const { trustScore, isNewUser } = useBehavior();
 
-  // Show nothing if ML hasn't scored yet
-  if (!trustScore) return null;
+  // New user — no model trained yet
+  if (isNewUser || (!trustScore)) {
+    return (
+      <Link to="/security"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all"
+            style={{
+              background: "rgba(245,158,11,0.1)",
+              border: "1px solid rgba(245,158,11,0.2)",
+              color: "#fbbf24",
+              textDecoration: "none",
+            }}
+            title="Set up behavioral authentication">
+        <ShieldQuestion size={12} />
+        <span>Setup Required</span>
+      </Link>
+    );
+  }
 
   const score  = trustScore.score  ?? 85;
   const action = trustScore.action ?? "allow";
