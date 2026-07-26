@@ -9,6 +9,7 @@ import Transactions from "./pages/Transactions.jsx";
 import Cards       from "./pages/Cards.jsx";
 import Security    from "./pages/Security.jsx";
 import Profile     from "./pages/Profile.jsx";
+import Verify from "./pages/Verify.jsx";
 
 function PrivateRoute({ children }) {
   return localStorage.getItem("nb_token") ? children : <Navigate to="/login" replace />;
@@ -22,6 +23,7 @@ export default function App() {
           <Route path="/"        element={<Navigate to="/dashboard" replace />} />
           <Route path="/login"   element={<Login />} />
           <Route path="/register" element={<Register />} />
+          <Route path="/verify" element={<Verify />} />
 
           <Route path="/" element={<PrivateRoute><DashboardLayout /></PrivateRoute>}>
             <Route path="dashboard"    element={<Dashboard />} />

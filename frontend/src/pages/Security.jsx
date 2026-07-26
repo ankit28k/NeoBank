@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from "react";
-import { Shield, Activity, Fingerprint, RefreshCw, Clock, ShieldQuestion } from "lucide-react";
+import { Shield, Activity, Fingerprint, Clock, ShieldQuestion } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 import { useBehavior } from "../context/BehaviorContext.jsx";
 import client from "../api/client.js";
@@ -11,6 +11,11 @@ export default function Security() {
   const [training, setTraining] = useState(false);
   const [trainMsg, setTrainMsg] = useState("");
   const [history,  setHistory]  = useState([]);     // running trust score history for chart
+
+  const [otpStep,    setOtpStep]    = useState("idle"); // idle | sent | verified
+  const [otpInput,   setOtpInput]   = useState("");
+  const [otpDevHint, setOtpDevHint] = useState("");
+  const [otpError,   setOtpError]   = useState("");
 
   // Load behavior status on mount
   useEffect(() => {
@@ -32,83 +37,103 @@ export default function Security() {
 
   const loadStatus = () => {
     client.get("/behavior/status")
-      .then(r => setStatus(r.data))
+      .then(r => {
+        setStatus(r.data);
+        if (r.data.otpVerified) setOtpStep("verified");
+      })
       .catch(() => {});
   };
 
   const TYPING_PROMPTS = [
-    "The quick brown fox jumps over the lazy dog",
-    "Banking security depends on knowing who you are",
-    "My fingers type differently than anyone else",
-    "NeoBank keeps your money safe every single day",
-    "Behavioral patterns are unique like fingerprints",
+    "Transfer@500 Now!",
+    "Secure#Bank2024",
+    "Pay to Rahul Rs.1000",
+    "Account@NeoBank #2024",
+    "Send Rs.750 to Priya!",
   ];
-  
-  // Add these state variables alongside existing ones:
-  const [typingPhase,   setTypingPhase]   = useState("idle");   // idle | prompting | done
-  const [promptIndex,   setPromptIndex]   = useState(0);
-  const [typedText,     setTypedText]     = useState("");
-  const [typingSamples, setTypingSamples] = useState([]);        // collected per-prompt metrics
-  const [keyLog,        setKeyLog]        = useState([]);        // live keystroke log for current prompt
-  const keyDownRef = useRef({});
+
+  const [typingPhase, setTypingPhase] = useState("idle"); // idle | prompting | done
+  const [promptIndex, setPromptIndex] = useState(0);
+  const [typedText,   setTypedText]   = useState("");
+  const [keyLog,       setKeyLog]     = useState([]); // live keystroke log for current prompt
+  const keyDownRef     = useRef({});
   const promptStartRef = useRef(null);
 
   const handleKeyDown = (e) => {
     keyDownRef.current[e.key] = performance.now();
   };
-  
+
   const handleKeyUp = (e) => {
     const now  = performance.now();
     const down = keyDownRef.current[e.key];
     if (!down) return;
     setKeyLog(prev => [...prev, {
-      key:        e.key,
-      dwell:      now - down,
-      flight:     prev.length > 0 ? now - prev[prev.length - 1].upTime : null,
-      upTime:     now,
+      key:    e.key,
+      dwell:  now - down,
+      flight: prev.length > 0 ? now - prev[prev.length - 1].upTime : null,
+      upTime: now,
     }]);
     delete keyDownRef.current[e.key];
   };
-  
-  const handlePromptDone = () => {
-    const target  = TYPING_PROMPTS[promptIndex];
-    const metrics = {
-      prompt:        target,
-      typed:         typedText,
-      keystrokes:    keyLog,
-      accuracy:      typedText === target ? 1.0 : typedText.split("").filter((c,i) => c === target[i]).length / target.length,
-      durationMs:    performance.now() - promptStartRef.current,
-      wpm:           (typedText.trim().split(" ").length / ((performance.now() - promptStartRef.current) / 60000)),
-    };
-    const newSamples = [...typingSamples, metrics];
-    setTypingSamples(newSamples);
+
+  // Called after each individual prompt is typed
+  const handlePromptDone = async () => {
+    const durationMs = performance.now() - promptStartRef.current;
+    const wpm = (typedText.trim().split(" ").length / (durationMs / 60000)) || 0;
+
+    try {
+      const { data } = await client.post("/behavior/enroll", {
+        keystrokes: keyLog,
+        wpm,
+        durationMs,
+      });
+      setTrainMsg(
+        data.trainingStarted
+          ? `Training started — ${data.enrolled} sessions collected`
+          : `Saved — ${data.needMore} more prompts needed`
+      );
+      if (data.trainingStarted) loadStatus();
+    } catch {
+      setTrainMsg("Failed to save — check connection");
+    }
+
     setTypedText("");
     setKeyLog([]);
-  
+
     if (promptIndex + 1 >= TYPING_PROMPTS.length) {
-      // All prompts done — send to backend for training
       setTypingPhase("done");
-      submitTypingTrain(newSamples);
+      loadStatus();
     } else {
       setPromptIndex(i => i + 1);
       promptStartRef.current = performance.now();
     }
   };
-  
-  const submitTypingTrain = async (samples) => {
-    setTraining(true);
-    setTrainMsg("");
+
+  const handleCancelTyping = () => {
+    setTypingPhase("idle");
+    setTypedText("");
+    setKeyLog([]);
+    setPromptIndex(0);
+  };
+
+  const handleSendOtp = async () => {
+    setOtpError("");
     try {
-      const { data } = await client.post("/behavior/train-typing", { samples });
-      setTrainMsg(data.message);
-      loadStatus();
+      const { data } = await client.post("/auth/otp/send");
+      setOtpStep("sent");
+      setOtpDevHint(data.devHint); // demo only — no real email service wired up
+    } catch {
+      setOtpError("Failed to send OTP");
+    }
+  };
+
+  const handleVerifyOtp = async () => {
+    setOtpError("");
+    try {
+      await client.post("/auth/otp/verify", { code: otpInput });
+      setOtpStep("verified");
     } catch (err) {
-      setTrainMsg(err.response?.data?.error || "Training failed");
-    } finally {
-      setTraining(false);
-      setTypingPhase("idle");
-      setPromptIndex(0);
-      setTypingSamples([]);
+      setOtpError(err.response?.data?.error || "Invalid OTP");
     }
   };
 
@@ -157,9 +182,9 @@ export default function Security() {
         </h2>
         <div className="grid grid-cols-3 gap-4">
           {[
-            { step: "1", text: "Use the app normally — navigate, type, click, scroll. SDK silently records your patterns." },
-            { step: "2", text: "Once 3+ sessions are collected, hit Train. A One-Class SVM learns your unique behavior." },
-            { step: "3", text: "The model scores every 8 seconds. Unusual behavior lowers trust — too low blocks transfers." },
+            { step: "1", text: "Verify with a one-time code, then type a few short phrases. SDK records your keystroke rhythm." },
+            { step: "2", text: "A binary classifier trains — your patterns vs everyone else's in the system." },
+            { step: "3", text: "At login and before transfers, you're asked to type a phrase again — the model checks it's really you." },
           ].map(({ step, text }) => (
             <div key={step} className="flex gap-3">
               <div className="w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-xs font-bold mt-0.5"
@@ -224,93 +249,124 @@ export default function Security() {
         </div>
       </div>
 
-      {/* ── Train button ── */}
-      <div className="glass rounded-2xl p-5 space-y-4">
-  <div className="flex items-center justify-between">
-    <div>
-      <p className="text-sm font-semibold text-white" style={{ fontFamily: "Syne, sans-serif" }}>
-        Train on Typing Patterns
-      </p>
-      <p className="text-xs text-slate-500 mt-0.5">
-        Type {TYPING_PROMPTS.length} short sentences — model learns your keystroke rhythm
-      </p>
-      {trainMsg && (
-        <p className="text-xs mt-1" style={{ color: trainMsg.includes("trained") ? "#34d399" : "#f87171" }}>
-          {trainMsg}
-        </p>
-      )}
-    </div>
-    {typingPhase === "idle" && (
-      <button className="neo-btn shrink-0" onClick={() => { setTypingPhase("prompting"); promptStartRef.current = performance.now(); }}>
-        Start Typing Test
-      </button>
-    )}
-  </div>
+      {/* ── OTP gate before enrollment ── */}
+      {otpStep !== "verified" && (
+        <div className="glass rounded-2xl p-5 space-y-3">
+          <p className="text-sm font-semibold text-white" style={{ fontFamily: "Syne, sans-serif" }}>
+            Verify it's you before enrolling
+          </p>
+          <p className="text-xs text-slate-500">
+            We send a one-time code to confirm your identity before recording typing patterns.
+          </p>
 
-  {typingPhase === "prompting" && (
-    <div className="space-y-3">
-      {/* Progress */}
-      <div className="flex items-center gap-3">
-        <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(30,41,59,1)" }}>
-          <div className="h-full rounded-full transition-all" style={{ width: `${(promptIndex / TYPING_PROMPTS.length) * 100}%`, background: "#00d4ff" }} />
-        </div>
-        <span className="text-xs text-slate-500 font-num shrink-0">{promptIndex + 1} / {TYPING_PROMPTS.length}</span>
-      </div>
-
-      {/* Prompt */}
-      <div className="p-4 rounded-xl" style={{ background: "rgba(0,212,255,0.04)", border: "1px solid rgba(0,212,255,0.12)" }}>
-        <p className="text-xs text-slate-500 mb-2">Type this exactly:</p>
-        <p className="text-base text-white font-medium tracking-wide">{TYPING_PROMPTS[promptIndex]}</p>
-      </div>
-
-      {/* Input */}
-      <div className="relative">
-        <input
-          autoFocus
-          className="neo-input font-mono"
-          placeholder="Start typing..."
-          value={typedText}
-          onChange={e => {
-            if (!promptStartRef.current) promptStartRef.current = performance.now();
-            setTypedText(e.target.value);
-          }}
-          onKeyDown={handleKeyDown}
-          onKeyUp={handleKeyUp}
-        />
-        {/* Live character match highlight */}
-        <p className="text-xs text-slate-500 mt-1 font-num">
-          {typedText.length} / {TYPING_PROMPTS[promptIndex].length} chars
-          {typedText.length > 0 && (
-            <span style={{ color: typedText === TYPING_PROMPTS[promptIndex].slice(0, typedText.length) ? "#34d399" : "#f87171" }}>
-              {" "}· {typedText === TYPING_PROMPTS[promptIndex].slice(0, typedText.length) ? "✓ correct" : "✗ mismatch"}
-            </span>
+          {otpStep === "idle" && (
+            <button className="neo-btn" onClick={handleSendOtp}>Send OTP</button>
           )}
-        </p>
-      </div>
 
-      <div className="flex gap-3">
-        <button className="neo-btn-ghost flex-1" onClick={() => { setTypingPhase("idle"); setTypedText(""); setKeyLog([]); setPromptIndex(0); setTypingSamples([]); }}>
-          Cancel
-        </button>
-        <button
-          className="neo-btn flex-1"
-          onClick={handlePromptDone}
-          disabled={typedText.length < TYPING_PROMPTS[promptIndex].length * 0.8}
-        >
-          {promptIndex + 1 >= TYPING_PROMPTS.length ? "Finish & Train" : "Next →"}
-        </button>
-      </div>
-    </div>
-  )}
+          {otpStep === "sent" && (
+            <div className="space-y-2">
+              {otpDevHint && (
+                <p className="text-xs" style={{ color: "#fbbf24" }}>
+                  Demo mode — no email service wired up. Your code: <span className="font-num font-bold">{otpDevHint}</span>
+                </p>
+              )}
+              <input className="neo-input font-num" placeholder="6-digit code" maxLength={6}
+                     value={otpInput} onChange={e => setOtpInput(e.target.value)} />
+              {otpError && <p className="text-xs" style={{ color: "#f87171" }}>{otpError}</p>}
+              <button className="neo-btn" onClick={handleVerifyOtp}>Verify Code</button>
+            </div>
+          )}
+        </div>
+      )}
 
-  {typingPhase === "done" && training && (
-    <div className="flex items-center gap-3 text-sm text-slate-400">
-      <span className="w-4 h-4 border-2 rounded-full animate-spin shrink-0"
-            style={{ borderColor: "rgba(0,212,255,0.2)", borderTopColor: "#00d4ff" }} />
-      Training model on your typing patterns...
-    </div>
-  )}
-</div>
+      {/* ── Train button — only shown after OTP verified ── */}
+      {otpStep === "verified" && (
+        <div className="glass rounded-2xl p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold text-white" style={{ fontFamily: "Syne, sans-serif" }}>
+                Train on Typing Patterns
+              </p>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Type {TYPING_PROMPTS.length} short sentences — model learns your keystroke rhythm
+              </p>
+              {trainMsg && (
+                <p className="text-xs mt-1" style={{ color: trainMsg.includes("started") ? "#34d399" : "#f87171" }}>
+                  {trainMsg}
+                </p>
+              )}
+            </div>
+            {typingPhase === "idle" && (
+              <button className="neo-btn shrink-0" onClick={() => { setTypingPhase("prompting"); promptStartRef.current = performance.now(); }}>
+                Start Typing Test
+              </button>
+            )}
+          </div>
+
+          {typingPhase === "prompting" && (
+            <div className="space-y-3">
+              {/* Progress */}
+              <div className="flex items-center gap-3">
+                <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(30,41,59,1)" }}>
+                  <div className="h-full rounded-full transition-all" style={{ width: `${(promptIndex / TYPING_PROMPTS.length) * 100}%`, background: "#00d4ff" }} />
+                </div>
+                <span className="text-xs text-slate-500 font-num shrink-0">{promptIndex + 1} / {TYPING_PROMPTS.length}</span>
+              </div>
+
+              {/* Prompt */}
+              <div className="p-4 rounded-xl" style={{ background: "rgba(0,212,255,0.04)", border: "1px solid rgba(0,212,255,0.12)" }}>
+                <p className="text-xs text-slate-500 mb-2">Type this exactly:</p>
+                <p className="text-base text-white font-medium tracking-wide">{TYPING_PROMPTS[promptIndex]}</p>
+              </div>
+
+              {/* Input */}
+              <div className="relative">
+                <input
+                  autoFocus
+                  className="neo-input font-mono"
+                  placeholder="Start typing..."
+                  value={typedText}
+                  onChange={e => {
+                    if (!promptStartRef.current) promptStartRef.current = performance.now();
+                    setTypedText(e.target.value);
+                  }}
+                  onKeyDown={handleKeyDown}
+                  onKeyUp={handleKeyUp}
+                />
+                <p className="text-xs text-slate-500 mt-1 font-num">
+                  {typedText.length} / {TYPING_PROMPTS[promptIndex].length} chars
+                  {typedText.length > 0 && (
+                    <span style={{ color: typedText === TYPING_PROMPTS[promptIndex].slice(0, typedText.length) ? "#34d399" : "#f87171" }}>
+                      {" "}· {typedText === TYPING_PROMPTS[promptIndex].slice(0, typedText.length) ? "✓ correct" : "✗ mismatch"}
+                    </span>
+                  )}
+                </p>
+              </div>
+
+              <div className="flex gap-3">
+                <button className="neo-btn-ghost flex-1" onClick={handleCancelTyping}>
+                  Cancel
+                </button>
+                <button
+                  className="neo-btn flex-1"
+                  onClick={handlePromptDone}
+                  disabled={typedText.length < TYPING_PROMPTS[promptIndex].length * 0.8}
+                >
+                  {promptIndex + 1 >= TYPING_PROMPTS.length ? "Finish & Train" : "Next →"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {typingPhase === "done" && training && (
+            <div className="flex items-center gap-3 text-sm text-slate-400">
+              <span className="w-4 h-4 border-2 rounded-full animate-spin shrink-0"
+                    style={{ borderColor: "rgba(0,212,255,0.2)", borderTopColor: "#00d4ff" }} />
+              Training model on your typing patterns...
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Live trust score timeline ── */}
       <div className="glass rounded-2xl p-5">

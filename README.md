@@ -120,3 +120,9 @@ npm run dev
 
 # Terminal 2 — ml folder  
 python3 app.py
+
+
+
+see this 
+
+https://scispace.com/chat/bbf8d9c5-18dd-437c-81de-daea0609cfe0

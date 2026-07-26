@@ -1,29 +1,12 @@
-"""
-NeoBank ML Microservice
-========================
-Flask server exposing:
-  POST /train         — train model from user's real sessions
-  POST /score         — score a batch of events
-  GET  /status/<id>   — check if model is trained
-  GET  /last-score/<id> — last cached score
-
-Run: python app.py
-Port: 5001
-"""
-
-import json
-import os
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-from features import safe_extract
 import model as ml_model
 
 app = Flask(__name__)
 CORS(app)
 
-# In-memory cache of last computed score per user
-_last_scores = {}
+ENROLL_MIN = 5
 
 
 @app.route("/health")
@@ -31,65 +14,40 @@ def health():
     return jsonify({"status": "ok"})
 
 
-@app.route("/train", methods=["POST"])
-def train():
-    """
-    Body: { user_id: str, samples: [[events], [events], ...] }
-    Each item in samples is a list of raw browser events for one session.
-    Trains the model on all provided samples.
-    """
-    data = request.get_json()
-    if not data:
-        return jsonify({"success": False, "error": "No data provided"}), 400
+@app.route("/enroll", methods=["POST"])
+def enroll():
+    data     = request.get_json()
+    user_id  = data.get("user_id")
+    features = data.get("features", {})
 
-    user_id = data.get("user_id")
-    samples = data.get("samples", [])
+    if not user_id or not features:
+        return jsonify({"error": "user_id and features required"}), 400
 
-    if not user_id or not samples:
-        return jsonify({"success": False, "error": "user_id and samples required"}), 400
+    count = ml_model.append_row_and_replace(user_id, features, keep_n=10)
+    print(f"[ENROLL] user_id={user_id} count={count}")
 
-    # Extract feature vectors from all sessions
-    feature_vectors = []
-    for session_events in samples:
-        fv = safe_extract(session_events)
-        if fv is not None:
-            feature_vectors.append(fv)
+    training_started = False
+    if count >= ENROLL_MIN:
+        result = ml_model.train_from_csv(user_id)
+        training_started = result.get("success", False)
+        print(f"[ENROLL->TRAIN] result={result}")
 
-    if len(feature_vectors) < 3:
-        return jsonify({
-            "success": False,
-            "error": f"Only {len(feature_vectors)} valid sessions. Need at least 3.",
-        }), 400
-
-    result = ml_model.train(user_id, feature_vectors)
-    return jsonify(result)
+    return jsonify({
+        "enrolled":        count,
+        "needMore":        max(0, ENROLL_MIN - count),
+        "trainingStarted": training_started,
+    })
 
 
-@app.route("/score", methods=["POST"])
-def score():
-    """
-    Body: { user_id: str, events: [event, event, ...] }
-    Returns trust score for this batch of events.
-    """
-    data = request.get_json()
-    if not data:
-        return jsonify({"score": 85, "action": "allow", "model_trained": False})
+@app.route("/verify", methods=["POST"])
+def verify():
+    data     = request.get_json()
+    user_id  = data.get("user_id")
+    features = data.get("features", {})
 
-    user_id = data.get("user_id")
-    events  = data.get("events", [])
-
-    if not user_id or not events:
-        return jsonify({"score": 85, "action": "allow", "model_trained": False})
-
-    fv = safe_extract(events)
-    if fv is None:
-        return jsonify({"score": 85, "action": "allow", "model_trained": False})
-
-    result = ml_model.score(user_id, fv)
-
-    # Cache the last score for this user
-    _last_scores[user_id] = result
-
+    print(f"\n[VERIFY] user_id={user_id}")
+    result = ml_model.verify_row(user_id, features)
+    print(f"[VERIFY] result={result}")
     return jsonify(result)
 
 
@@ -97,19 +55,19 @@ def score():
 def status(user_id):
     trained = ml_model.is_trained(user_id)
     meta    = ml_model.load_meta(user_id) if trained else {}
+    count   = ml_model.count_user_rows(user_id)
+
     return jsonify({
-        "trained":     trained,
-        "lastTrained": meta.get("trained_on"),
-        "sessions":    meta.get("sessions", 0),
+        "trained":              trained,
+        "lastTrained":          meta.get("trained_on"),
+        "samplesCollected":     count,
+        "samplesNeededToTrain": max(0, ENROLL_MIN - count),
+        "canTrain":             count >= ENROLL_MIN,
+        "pos_samples":          meta.get("pos_samples", 0),
+        "neg_samples":          meta.get("neg_samples", 0),
     })
 
 
-@app.route("/last-score/<user_id>")
-def last_score(user_id):
-    result = _last_scores.get(user_id, {"score": 85, "action": "allow"})
-    return jsonify(result)
-
-
 if __name__ == "__main__":
-    print("🧠 NeoBank ML Service running on port 5001")
+    print("NeoBank ML Service running on port 5001")
     app.run(host="0.0.0.0", port=5001, debug=True)

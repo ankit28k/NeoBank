@@ -22,9 +22,28 @@ export default function Login() {
     setError("");
 
     try {
+      // const { data } = await client.post("/auth/login", form);
+      // login(data.user, data.token);
+      // navigate("/dashboard");
+
+      // After login API succeeds:
       const { data } = await client.post("/auth/login", form);
       login(data.user, data.token);
-      navigate("/dashboard");
+
+      // Check if model is trained for this user
+      const statusRes = await client.get("/behavior/status",
+        { headers: { Authorization: `Bearer ${data.token}` } }
+      );
+
+      if (statusRes.data.modelTrained) {
+        // Show typing challenge before dashboard
+        navigate("/verify?next=/dashboard");
+      } else {
+        // New user — go to dashboard, prompt enrollment
+        navigate("/dashboard");
+      }
+
+      
     } catch (err) {
       setError(err.response?.data?.error || "Login failed");
     } finally {

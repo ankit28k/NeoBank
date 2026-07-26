@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { Send, AlertTriangle, CheckCircle } from "lucide-react";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useBehavior } from "../context/BehaviorContext.jsx";
@@ -6,32 +7,41 @@ import client from "../api/client.js";
 
 export default function Transfer() {
   const { user, updateBalance } = useAuth();
-  const { trustScore } = useBehavior();
+  const { trustScore }          = useBehavior();
+  const navigate                = useNavigate();
 
   const score = trustScore?.score ?? 85;
 
   const [form,    setForm]    = useState({ recipientName: "", recipientAccount: "", amount: "", description: "" });
-  const [step,    setStep]    = useState("form"); // "form" | "confirm" | "success"
+  const [step,    setStep]    = useState("form");
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState("");
+
+  // Check if returning from verify page with a pending transfer
+  useEffect(() => {
+    const pending = sessionStorage.getItem("pendingTransfer");
+    if (pending && window.location.search.includes("action=confirm")) {
+      setForm(JSON.parse(pending));
+      setStep("confirm");
+      sessionStorage.removeItem("pendingTransfer");
+    }
+  }, []);
 
   const handleReview = (e) => {
     e.preventDefault();
     if (!form.amount || parseFloat(form.amount) <= 0) { setError("Enter a valid amount"); return; }
-    if (parseFloat(form.amount) > 50000)               { setError("Max transfer is ₹50,000 per transaction"); return; }
+    if (parseFloat(form.amount) > 50000)               { setError("Max transfer is ₹50,000"); return; }
     if (parseFloat(form.amount) > (user?.balance || 0)) { setError("Insufficient balance"); return; }
     setError("");
-    setStep("confirm");
+
+    // Save form then go to behavioral verify
+    sessionStorage.setItem("pendingTransfer", JSON.stringify(form));
+    navigate("/verify?next=/transfer&action=confirm");
   };
 
   const handleConfirm = async () => {
-    if (score < 50) {
-      setError("Transfer blocked — trust score too low. Wait a moment and try again.");
-      return;
-    }
     setLoading(true);
     setError("");
-
     try {
       const { data } = await client.post("/transactions/transfer", {
         recipientName:    form.recipientName,
@@ -54,7 +64,6 @@ export default function Transfer() {
     setError("");
   };
 
-  // ── Success screen ────────────────────────────────────────────────
   if (step === "success") return (
     <div className="max-w-md mx-auto text-center py-16">
       <div className="w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-5"
@@ -75,25 +84,6 @@ export default function Transfer() {
         <p className="text-slate-500 text-sm mt-1">Transfer funds to any bank account</p>
       </div>
 
-      {/* Trust warning */}
-      {score < 70 && (
-        <div className="flex items-start gap-3 p-4 rounded-xl"
-             style={score < 50
-               ? { background: "rgba(239,68,68,0.05)", border: "1px solid rgba(239,68,68,0.2)", color: "#f87171" }
-               : { background: "rgba(245,158,11,0.05)", border: "1px solid rgba(245,158,11,0.2)", color: "#fbbf24" }}>
-          <AlertTriangle size={15} className="shrink-0 mt-0.5" />
-          <div>
-            <p className="text-sm font-medium">{score < 50 ? "Transfer Restricted" : "Unusual Activity Detected"}</p>
-            <p className="text-xs mt-0.5 opacity-80">
-              {score < 50
-                ? "Your trust score is too low to proceed. The system will re-evaluate shortly."
-                : "Your behavioral patterns look unusual. Proceed with caution."}
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* ── Form ── */}
       {step === "form" && (
         <form onSubmit={handleReview} className="glass rounded-2xl p-6 space-y-4">
           {error && (
@@ -131,17 +121,15 @@ export default function Transfer() {
 
           <p className="text-xs text-slate-600">
             Available: <span className="font-num text-slate-400">₹{(user?.balance || 0).toLocaleString("en-IN")}</span>
-            &nbsp;·&nbsp; Max per transfer: <span className="font-num text-slate-400">₹50,000</span>
+            &nbsp;·&nbsp; Max: <span className="font-num text-slate-400">₹50,000</span>
           </p>
 
-          <button type="submit" className="neo-btn w-full" disabled={score < 50}>
-            <Send size={14} />
-            {score < 50 ? "Blocked — Low Trust Score" : "Review Transfer"}
+          <button type="submit" className="neo-btn w-full">
+            <Send size={14} /> Review Transfer
           </button>
         </form>
       )}
 
-      {/* ── Confirm ── */}
       {step === "confirm" && (
         <div className="glass rounded-2xl p-6 space-y-5">
           <h3 className="text-lg font-semibold text-white" style={{ fontFamily: "Syne, sans-serif" }}>Confirm Transfer</h3>

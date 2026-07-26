@@ -26,6 +26,15 @@ const userSchema = new mongoose.Schema(
       type: Number,
       default: 100000, // ₹1,00,000 starting balance
     },
+    otpCode: { 
+      type: String 
+    },
+    otpExpiresAt: { 
+      type: Date 
+    },
+    otpVerifiedAt: {
+      type: Date 
+    },
   },
   { timestamps: true }
 );

@@ -1,140 +1,110 @@
-const BehaviorSample = require("../models/behaviorSample");
-const { getTrustScore, trainModel, getModelStatus } = require("../services/mlService");
+const axios = require("axios");
 
-// POST /api/behavior/events — receive behavioral events from browser
-async function handleIngestEvents(req, res) {
-  const { events, sessionDurationMs } = req.body;
+const ML_URL = process.env.ML_SERVICE_URL || "http://localhost:5001";
+const OTP_WINDOW_MS = 10 * 60 * 1000; // OTP stays valid for 10 min after verification
 
-  if (!events || !Array.isArray(events) || events.length === 0) {
-    return res.status(400).json({ error: "Events array is required" });
-  }
+function extractFeatures(keystrokes, wpm, durationMs) {
+  const dwells  = keystrokes.map(k => k.dwell).filter(Boolean);
+  const flights = keystrokes.map(k => k.flight).filter(Boolean);
 
-  // Get trust score from ML service (non-blocking — respond immediately)
-  const scoreResult = await getTrustScore(req.user._id.toString(), events);
+  const mean = arr => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+  const std  = arr => {
+    if (arr.length < 2) return 0;
+    const m = mean(arr);
+    return Math.sqrt(arr.reduce((s, x) => s + (x - m) ** 2, 0) / arr.length);
+  };
 
-  // Persist raw events for training (in background, don't wait)
-  BehaviorSample.create({
-    userId: req.user._id,
-    events,
-    label: 1, // assume legitimate — user can label later
-    sessionDurationMs: sessionDurationMs || 0,
-  }).catch((err) => console.error("Failed to save behavior sample:", err.message));
+  const shiftDwells = keystrokes
+    .filter(k => ["Shift", "ShiftLeft", "ShiftRight"].includes(k.key))
+    .map(k => k.dwell).filter(Boolean);
 
-  return res.json(scoreResult);
+  const numDwells = keystrokes
+    .filter(k => k.key && /^[0-9]$/.test(k.key))
+    .map(k => k.dwell).filter(Boolean);
+
+  const specialCount   = keystrokes.filter(k => ["@", "#", "!", ".", ",", "$", "%"].includes(k.key)).length;
+  const backspaceCount = keystrokes.filter(k => k.key === "Backspace").length;
+
+  return {
+    dwell_mean: mean(dwells),   dwell_std: std(dwells),
+    flight_mean: mean(flights), flight_std: std(flights),
+    keystroke_count: keystrokes.length,
+    wpm: wpm || 0, duration_ms: durationMs || 0,
+    shift_dwell_mean: mean(shiftDwells), shift_count: shiftDwells.length,
+    num_dwell_mean: mean(numDwells),     num_count: numDwells.length,
+    special_count: specialCount, backspace_count: backspaceCount,
+  };
 }
 
-// POST /api/behavior/train — user submits their behavior data to train the ML model
-async function handleTrainModel(req, res) {
+// POST /api/behavior/enroll — gated by OTP
+async function handleEnroll(req, res) {
+  const { keystrokes, wpm, durationMs } = req.body;
   const userId = req.user._id.toString();
 
-  // Load all stored behavior samples for this user
-  const samples = await BehaviorSample.find({ userId: req.user._id, label: 1 })
-    .sort({ createdAt: -1 })
-    .limit(100); // Use last 100 sessions for training
-
-  if (samples.length < 3) {
-    return res.status(400).json({
-      error: "Need at least 3 behavior sessions to train. Use the app more first!",
-      samplesCollected: samples.length,
-    });
+  if (!keystrokes || keystrokes.length === 0) {
+    return res.status(400).json({ error: "No keystrokes provided" });
   }
 
-  // Send samples to Python ML service for training
-  const result = await trainModel(userId, samples.map((s) => s.events));
+  const freshOtp = req.user.otpVerifiedAt &&
+    (Date.now() - new Date(req.user.otpVerifiedAt).getTime() < OTP_WINDOW_MS);
 
-  return res.json({
-    message: result.success
-      ? `Model trained on ${samples.length} sessions!`
-      : "Training failed — ML service may be offline",
-    samplesUsed: samples.length,
-    ...result,
-  });
-}
-
-// GET /api/behavior/status — how many sessions collected, model trained?
-async function handleGetStatus(req, res) {
-  const userId = req.user._id;
-  const sampleCount = await BehaviorSample.countDocuments({ userId, label: 1 });
-  const mlStatus = await getModelStatus(req.user._id.toString());
-
-  return res.json({
-    samplesCollected:     sampleCount,
-    samplesNeededToTrain: Math.max(0, 1 - sampleCount),
-    canTrain:             sampleCount >= 1,
-    modelTrained:         mlStatus.trained,
-    lastTrained:          mlStatus.lastTrained || null,
-    isNewUser:            !mlStatus.trained && sampleCount === 0, // ← add this
-  });
-}
-
-// GET /api/behavior/score — get latest trust score for current session
-async function handleGetScore(req, res) {
-  const userId = req.user._id.toString();
-  const mlStatus = await getModelStatus(userId);
-
-  if (!mlStatus.trained) {
-    return res.json({
-      score: 85,
-      action: "allow",
-      message: "Model not trained yet — train it first for live scoring",
-      modelTrained: false,
-    });
+  if (!freshOtp) {
+    return res.status(403).json({ error: "OTP verification required", requiresOtp: true });
   }
 
-  // Return last cached score from ML service
+  const features = extractFeatures(keystrokes, wpm, durationMs);
+
   try {
-    const response = await require("axios").get(
-      `${process.env.ML_SERVICE_URL || "http://localhost:5001"}/last-score/${userId}`
-    );
-    return res.json({ ...response.data, modelTrained: true });
+    const response = await axios.post(`${ML_URL}/enroll`, { user_id: userId, features });
+    return res.json(response.data);
+  } catch (err) {
+    return res.status(500).json({ error: "ML service unavailable" });
+  }
+}
+
+// POST /api/behavior/verify — at login and transfer
+async function handleVerify(req, res) {
+  const { keystrokes, wpm, durationMs } = req.body;
+  const userId = req.user._id.toString();
+
+  if (!keystrokes || keystrokes.length === 0) {
+    return res.status(400).json({ error: "No keystrokes provided" });
+  }
+
+  const features = extractFeatures(keystrokes, wpm, durationMs);
+
+  try {
+    const response = await axios.post(`${ML_URL}/verify`, { user_id: userId, features });
+    return res.json(response.data);
+  } catch (err) {
+    return res.json({ prediction: "genuine", confidence: null, fallback: true });
+  }
+}
+
+// GET /api/behavior/status
+async function handleGetStatus(req, res) {
+  const userId = req.user._id.toString();
+
+  const otpVerified = !!(req.user.otpVerifiedAt &&
+    (Date.now() - new Date(req.user.otpVerifiedAt).getTime() < OTP_WINDOW_MS));
+
+  try {
+    const { data } = await axios.get(`${ML_URL}/status/${userId}`);
+    return res.json({
+      samplesCollected:     data.samplesCollected,
+      samplesNeededToTrain: data.samplesNeededToTrain,
+      canTrain:             data.canTrain,
+      modelTrained:         data.trained,
+      lastTrained:          data.lastTrained,
+      isNewUser:            !data.trained && data.samplesCollected === 0,
+      otpVerified,
+    });
   } catch {
-    return res.json({ score: 85, action: "allow", modelTrained: true });
+    return res.json({
+      samplesCollected: 0, modelTrained: false,
+      isNewUser: true, otpVerified,
+    });
   }
 }
 
-async function handleTrainTyping(req, res) {
-  const { samples } = req.body;  // array of { keystrokes, wpm, durationMs, accuracy }
-
-  if (!samples || samples.length < 1) {
-    return res.status(400).json({ error: "Need all 5 typing prompts completed" });
-  }
-
-  // Convert typing samples to event format and store
-  const allEvents = samples.flatMap(s =>
-    (s.keystrokes || []).map(k => ({
-      event_type:  "keystroke",
-      key:         k.key,
-      dwell_time:  k.dwell,
-      flight_time: k.flight,
-      wpm:         s.wpm,
-      timestamp:   Date.now(),
-    }))
-  );
-
-  await BehaviorSample.create({
-    userId:  req.user._id,
-    events:  allEvents,
-    label:   1,
-    sessionDurationMs: samples.reduce((s, x) => s + (x.durationMs || 0), 0),
-  });
-
-  // Now trigger training with all stored samples
-  const allSamples = await BehaviorSample.find({ userId: req.user._id, label: 1 })
-    .sort({ createdAt: -1 }).limit(100);
-
-  const result = await trainModel(req.user._id.toString(), allSamples.map(s => s.events));
-
-  return res.json({
-    message:     result.success ? `Model trained on your typing patterns!` : "Training failed",
-    samplesUsed: allSamples.length,
-    ...result,
-  });
-}
-
-module.exports = {
-  handleIngestEvents,
-  handleTrainModel,
-  handleGetStatus,
-  handleGetScore,
-  handleTrainTyping,
-};
+module.exports = { handleEnroll, handleVerify, handleGetStatus };

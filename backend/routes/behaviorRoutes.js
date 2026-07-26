@@ -1,26 +1,15 @@
 const express = require("express");
-const router = express.Router();
+const router  = express.Router();
 
 const {
-  handleIngestEvents,
-  handleTrainModel,
+  handleEnroll,
+  handleVerify,
   handleGetStatus,
-  handleGetScore,
-  handleTrainTyping,
 } = require("../controllers/behaviorController");
 const { requireAuth } = require("../middlewares/auth");
 
-// All behavior routes require authentication
-router.post("/events", requireAuth, handleIngestEvents);
-router.post("/train", requireAuth, handleTrainModel);
-router.get("/status", requireAuth, handleGetStatus);
-router.get("/score", requireAuth, handleGetScore);
-router.post("/train-typing", requireAuth, handleTrainTyping);
+router.post("/enroll",  requireAuth, handleEnroll);
+router.post("/verify",  requireAuth, handleVerify);
+router.get("/status",   requireAuth, handleGetStatus);
 
 module.exports = router;
-
-
-
-
-
-

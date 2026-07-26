@@ -1,44 +1,44 @@
-"""
-Behavioral authentication model.
-Trains a One-Class SVM on real user sessions (no fake/synthetic data).
-Requires at least 3 real sessions to train.
-
-Model is saved per-user to disk as a joblib file.
-"""
-
 import os
 import json
 import joblib
+import numpy as np
+import pandas as pd
 from datetime import datetime
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, PowerTransformer
+from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.ensemble import BaggingClassifier, RandomForestClassifier
 from sklearn.svm import SVC
 from sklearn.neural_network import MLPClassifier
-import numpy as np
-
 
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "trained_models")
+CSV_PATH   = os.path.join(os.path.dirname(__file__), "keystroke_data.csv")
 os.makedirs(MODELS_DIR, exist_ok=True)
 
+FEATURE_COLUMNS = [
+    "dwell_mean", "dwell_std", "flight_mean", "flight_std",
+    "keystroke_count", "wpm", "duration_ms",
+    "shift_dwell_mean", "shift_count",
+    "num_dwell_mean", "num_count",
+    "special_count", "backspace_count",
+]
 
+ENROLL_MIN = 5
+
+
+# ── Paths ─────────────────────────────────────────────────────────────
 def model_path(user_id):
-    return os.path.join(MODELS_DIR, f"{user_id}.joblib")
-
+    return os.path.join(MODELS_DIR, f"{user_id}.pkl")
 
 def meta_path(user_id):
     return os.path.join(MODELS_DIR, f"{user_id}_meta.json")
 
-
 def is_trained(user_id):
     return os.path.exists(model_path(user_id))
-
 
 def load_model(user_id):
     if not is_trained(user_id):
         return None
-    return joblib.load(model_path(user_id))  # returns dict now, not Pipeline
-
+    return joblib.load(model_path(user_id))
 
 def load_meta(user_id):
     path = meta_path(user_id)
@@ -48,87 +48,144 @@ def load_meta(user_id):
         return json.load(f)
 
 
-def train(user_id, feature_vectors):
-    if len(feature_vectors) < 3:
-        return {"success": False, "error": "Need at least 3 sessions to train"}
+# ── CSV storage ───────────────────────────────────────────────────────
+def _load_csv():
+    if os.path.exists(CSV_PATH):
+        return pd.read_csv(CSV_PATH)
+    cols = ["user_id"] + FEATURE_COLUMNS + ["timestamp"]
+    return pd.DataFrame(columns=cols)
 
-    X = np.array(feature_vectors)
-    X = X[np.any(X != 0, axis=1)]
-    if len(X) < 3:
-        return {"success": False, "error": "Not enough non-empty sessions"}
+def _save_csv(df):
+    df.to_csv(CSV_PATH, index=False)
 
-    # All samples are labeled "1" (legitimate user)
-    # We synthetically create anomaly samples by adding heavy noise
+def count_user_rows(user_id):
+    df = _load_csv()
+    if len(df) == 0:
+        return 0
+    return int((df["user_id"] == user_id).sum())
+
+def append_row_and_replace(user_id, features, keep_n=10):
+    """
+    Append one enrollment row for this user, keeping only the most recent
+    `keep_n` rows for them (replace-last-N behavior on re-enrollment).
+    """
+    df = _load_csv()
+
+    new_row = {"user_id": user_id, "timestamp": datetime.utcnow().isoformat()}
+    for col in FEATURE_COLUMNS:
+        new_row[col] = float(features.get(col, 0))
+
+    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+
+    user_rows = df[df["user_id"] == user_id].sort_values("timestamp", ascending=False)
+    if len(user_rows) > keep_n:
+        drop_idx = user_rows.iloc[keep_n:].index
+        df = df.drop(index=drop_idx)
+
+    _save_csv(df)
+    return count_user_rows(user_id)
+
+
+# ── Synthetic negative class (only used when no other real users exist) ──
+def generate_human_negatives(n_samples, feature_names):
     rng = np.random.default_rng(42)
-    noise = rng.normal(loc=0, scale=X.std(axis=0) * 3 + 0.1, size=X.shape)
-    X_fake = X + noise
-
-    X_train = np.vstack([X, X_fake])
-    y_train = np.array([1] * len(X) + [0] * len(X_fake))
-
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_train)
-
-    # Bagging ensemble: SVM + ANN + Random Forest
-    svm = BaggingClassifier(
-        estimator=SVC(kernel="rbf", probability=True),
-        n_estimators=5, random_state=42
-    )
-    ann = BaggingClassifier(
-        estimator=MLPClassifier(hidden_layer_sizes=(32, 16), max_iter=500),
-        n_estimators=5, random_state=42
-    )
-    rf = RandomForestClassifier(n_estimators=50, random_state=42)
-
-    svm.fit(X_scaled, y_train)
-    ann.fit(X_scaled, y_train)
-    rf.fit(X_scaled, y_train)
-
-    model_bundle = {
-        "scaler": scaler,
-        "svm": svm,
-        "ann": ann,
-        "rf":  rf,
+    ranges = {
+        "dwell_mean": (60, 180), "dwell_std": (10, 60),
+        "flight_mean": (50, 200), "flight_std": (20, 80),
+        "keystroke_count": (15, 40), "wpm": (20, 90),
+        "duration_ms": (3000, 15000),
+        "shift_dwell_mean": (80, 250), "shift_count": (1, 8),
+        "num_dwell_mean": (70, 200), "num_count": (0, 6),
+        "special_count": (0, 4), "backspace_count": (0, 5),
     }
-    joblib.dump(model_bundle, model_path(user_id))
+    rows = []
+    for _ in range(n_samples):
+        row = {f: float(rng.uniform(*ranges.get(f, (0, 100)))) for f in feature_names}
+        rows.append(row)
+    return rows
+
+
+# ── Training ──────────────────────────────────────────────────────────
+def train_from_csv(user_id):
+    df = _load_csv()
+
+    df_pos = df[df["user_id"] == user_id]
+    df_neg = df[df["user_id"] != user_id]
+
+    if len(df_pos) == 0:
+        return {"success": False, "error": "No samples for this user"}
+
+    X_pos = df_pos[FEATURE_COLUMNS].fillna(0).values
+
+    if len(df_neg) < 3:
+        neg_rows = generate_human_negatives(15, FEATURE_COLUMNS)
+        X_neg = pd.DataFrame(neg_rows)[FEATURE_COLUMNS].values
+    else:
+        X_neg = df_neg[FEATURE_COLUMNS].fillna(0).values
+
+    X = np.vstack([X_pos, X_neg])
+    y = np.array([1] * len(X_pos) + [0] * len(X_neg))
+
+    k        = min(len(FEATURE_COLUMNS), X.shape[1])
+    selector = SelectKBest(f_classif, k=k)
+    selector.fit(X, y)
+    mask              = selector.get_support()
+    selected_features = [FEATURE_COLUMNS[i] for i, m in enumerate(mask) if m]
+    X_sel             = X[:, mask]
+
+    scaler          = StandardScaler()
+    power_transform = PowerTransformer()
+    X_scaled        = scaler.fit_transform(X_sel)
+    X_transformed   = power_transform.fit_transform(X_scaled)
+
+    svm = BaggingClassifier(estimator=SVC(kernel="rbf", probability=True), n_estimators=5, random_state=42)
+    ann = BaggingClassifier(estimator=MLPClassifier(hidden_layer_sizes=(32, 16), max_iter=500), n_estimators=5, random_state=42)
+    rf  = RandomForestClassifier(n_estimators=50, random_state=42)
+
+    svm.fit(X_transformed, y)
+    ann.fit(X_transformed, y)
+    rf.fit(X_transformed, y)
+
+    bundle = {
+        "scaler": scaler, "power_transform": power_transform,
+        "selected_features": selected_features,
+        "svm": svm, "ann": ann, "rf": rf,
+    }
+    # joblib.dump overwrites the existing file — old model replaced automatically
+    joblib.dump(bundle, model_path(user_id))
 
     meta = {
         "user_id":     user_id,
         "trained_on":  datetime.utcnow().isoformat(),
-        "sessions":    len(X),
-        "feature_dim": X.shape[1],
-        "ensemble":    "bagging(SVM) + bagging(ANN) + RandomForest",
+        "pos_samples": int(len(X_pos)),
+        "neg_samples": int(len(X_neg)),
     }
     with open(meta_path(user_id), "w") as f:
         json.dump(meta, f)
 
-    return {"success": True, "sessions": len(X), "feature_dim": X.shape[1]}
+    return {"success": True, "pos_samples": len(X_pos), "neg_samples": len(X_neg)}
 
 
-def score(user_id, feature_vector):
+# ── Scoring ───────────────────────────────────────────────────────────
+def verify_row(user_id, feature_dict):
     bundle = load_model(user_id)
     if bundle is None:
-        return {"score": 85, "action": "allow", "model_trained": False}
+        return {"prediction": "genuine", "confidence": None, "model_trained": False}
 
-    fv = np.array(feature_vector).reshape(1, -1)
-    X_scaled = bundle["scaler"].transform(fv)
+    selected = bundle["selected_features"]
+    row      = np.array([float(feature_dict.get(col, 0)) for col in selected]).reshape(1, -1)
 
-    # Probability of class "1" (legitimate) from each model
-    p_svm = bundle["svm"].predict_proba(X_scaled)[0][1]
-    p_ann = bundle["ann"].predict_proba(X_scaled)[0][1]
-    p_rf  = bundle["rf"].predict_proba(X_scaled)[0][1]
+    scaled      = bundle["scaler"].transform(row)
+    transformed = bundle["power_transform"].transform(scaled)
 
-    # Weighted average: RF gets slightly more weight (more stable with few samples)
-    trust = (p_svm * 0.30 + p_ann * 0.30 + p_rf * 0.40) * 100
+    p_svm = bundle["svm"].predict_proba(transformed)[0][1]
+    p_ann = bundle["ann"].predict_proba(transformed)[0][1]
+    p_rf  = bundle["rf"].predict_proba(transformed)[0][1]
 
-    if trust >= 70:   action = "allow"
-    elif trust >= 50: action = "warn"
-    elif trust >= 30: action = "challenge"
-    else:             action = "block"
+    confidence = round(p_svm * 0.30 + p_ann * 0.30 + p_rf * 0.40, 3)
+    prediction = "genuine" if confidence >= 0.5 else "imposter"
 
     return {
-        "score":         round(float(trust), 1),
-        "action":        action,
-        "model_trained": True,
-        "breakdown":     {"svm": round(p_svm*100, 1), "ann": round(p_ann*100, 1), "rf": round(p_rf*100, 1)},
+        "prediction": prediction, "confidence": confidence, "model_trained": True,
+        "breakdown": {"svm": round(p_svm, 3), "ann": round(p_ann, 3), "rf": round(p_rf, 3)},
     }

@@ -92,8 +92,47 @@ async function handleGetMe(req, res) {
   });
 }
 
+// POST /api/auth/otp/send
+async function handleSendOtp(req, res) {
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+  await User.findByIdAndUpdate(req.user._id, {
+    otpCode: otp,
+    otpExpiresAt: expiresAt,
+  });
+
+  // No real email service wired up — logging to console for this demo.
+  // In production this would go through an email/SMS provider.
+  console.log(`[OTP] Code for ${req.user.email}: ${otp}`);
+
+  return res.json({ message: "OTP sent", devHint: otp });
+}
+
+// POST /api/auth/otp/verify
+async function handleVerifyOtp(req, res) {
+  const { code } = req.body;
+  const user = await User.findById(req.user._id);
+
+  if (!user.otpCode || !user.otpExpiresAt || user.otpExpiresAt < new Date()) {
+    return res.status(400).json({ error: "OTP expired or not requested" });
+  }
+  if (user.otpCode !== code) {
+    return res.status(400).json({ error: "Incorrect OTP" });
+  }
+
+  user.otpVerifiedAt = new Date();
+  user.otpCode = undefined;
+  user.otpExpiresAt = undefined;
+  await user.save();
+
+  return res.json({ verified: true });
+}
+
 module.exports = {
   handleRegister,
   handleLogin,
   handleGetMe,
+  handleSendOtp,
+  handleVerifyOtp,
 };
