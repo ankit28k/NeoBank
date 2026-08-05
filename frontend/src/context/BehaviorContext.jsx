@@ -1,45 +1,36 @@
-import { createContext, useContext, useEffect, useRef, useState } from "react";
-import { BehaviorSDK } from "../sdk/BehaviorSDK.js";
+import { createContext, useContext, useEffect, useState, useCallback } from "react";
+import client from "../api/client.js";
 
-const BehaviorContext = createContext({ trustScore: null, isNewUser: false });
+const BehaviorContext = createContext({
+  modelTrained: false,
+  isNewUser: false,
+  samplesCollected: 0,
+  refreshStatus: () => {},
+});
 
 export function useBehavior() {
   return useContext(BehaviorContext);
 }
 
 export function BehaviorProvider({ children }) {
-  const sdkRef = useRef(null);
-  const [trustScore, setTrustScore] = useState(null);
-  const [isNewUser,  setIsNewUser]  = useState(false);
+  const [status, setStatus] = useState({
+    modelTrained: false,
+    isNewUser: false,
+    samplesCollected: 0,
+  });
 
-  useEffect(() => {
-    const token   = localStorage.getItem("nb_token");
-    const userStr = localStorage.getItem("nb_user");
-    if (!token || !userStr) return;
-
-    // Check if new user — no model trained yet
-    fetch("/api/behavior/status", {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-      .then(r => r.json())
-      .then(data => { if (data.isNewUser) setIsNewUser(true); })
+  const refreshStatus = useCallback(() => {
+    client.get("/behavior/status")
+      .then(r => setStatus(r.data))
       .catch(() => {});
-
-    const user = JSON.parse(userStr);
-    const sdk  = new BehaviorSDK(user._id, (score) => {
-      if (score.model_trained === false) return; // don't update badge until trained
-      setIsNewUser(false); // model now exists, clear new user state
-      setTrustScore(score);
-    });
-
-    sdk.start();
-    sdkRef.current = sdk;
-
-    return () => { sdk.stop(); };
   }, []);
 
+  useEffect(() => {
+    refreshStatus();
+  }, [refreshStatus]);
+
   return (
-    <BehaviorContext.Provider value={{ trustScore, isNewUser }}>
+    <BehaviorContext.Provider value={{ ...status, refreshStatus }}>
       {children}
     </BehaviorContext.Provider>
   );

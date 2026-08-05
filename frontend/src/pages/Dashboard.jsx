@@ -6,33 +6,34 @@ import { useAuth } from "../context/AuthContext.jsx";
 import { useBehavior } from "../context/BehaviorContext.jsx";
 import client from "../api/client.js";
 
-function TrustPanel({ trustScore }) {
-  if (!trustScore) return (
+function TrustPanel({ modelTrained, samplesCollected }) {
+  if (!modelTrained) return (
     <div className="glass rounded-2xl p-5 flex items-center justify-center h-40">
-      <p className="text-slate-500 text-sm text-center">Train your behavioral model<br/>in Security page</p>
+      <p className="text-slate-500 text-sm text-center">
+        Set up behavioral authentication<br/>in the Security page
+      </p>
     </div>
   );
 
-  const score    = trustScore.score ?? 85;
-  const barColor = score >= 70 ? "#10b981" : score >= 50 ? "#f59e0b" : "#ef4444";
-
   return (
     <div className="glass rounded-2xl p-5 space-y-3">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-slate-300" style={{ fontFamily: "Syne, sans-serif" }}>Trust Score</h3>
-        <span className="font-num text-2xl font-bold" style={{ color: barColor }}>{Math.round(score)}</span>
+      <h3 className="text-sm font-semibold text-slate-300" style={{ fontFamily: "Syne, sans-serif" }}>
+        Behavioral Profile
+      </h3>
+      <div className="flex items-center gap-2">
+        <div className="w-2 h-2 rounded-full" style={{ background: "#10b981" }} />
+        <p className="text-sm text-white font-medium">Active</p>
       </div>
-      <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
-        <div className="trust-bar h-full rounded-full" style={{ width: `${score}%`, background: barColor }} />
-      </div>
-      <p className="text-xs text-slate-500">{trustScore.action === "allow" ? "✓ Identity verified" : `⚠ ${trustScore.action}`}</p>
+      <p className="text-xs text-slate-500">
+        Verified at login and before every transfer. Trained on {samplesCollected} typing sessions.
+      </p>
     </div>
   );
 }
 
 export default function Dashboard() {
   const { user }       = useAuth();
-  const { trustScore } = useBehavior();
+  const { modelTrained, samplesCollected } = useBehavior();
 
   const [transactions, setTransactions] = useState([]);
   const [hideBalance,  setHideBalance]  = useState(false);
@@ -90,7 +91,7 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <TrustPanel trustScore={trustScore} />
+        <TrustPanel modelTrained={modelTrained} samplesCollected={samplesCollected} />
       </div>
 
       {/* Chart + Quick actions */}
