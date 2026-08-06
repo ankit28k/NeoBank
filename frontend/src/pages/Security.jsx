@@ -5,7 +5,6 @@ import { useBehavior } from "../context/BehaviorContext.jsx";
 import client from "../api/client.js";
 
 export default function Security() {
-  const { trustScore } = useBehavior();
 
   const [status,   setStatus]   = useState(null);   // { samplesCollected, canTrain, modelTrained }
   const [training, setTraining] = useState(false);
