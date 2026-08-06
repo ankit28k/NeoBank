@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Shield, CheckCircle, XCircle } from "lucide-react";
+import { Shield, CheckCircle, XCircle, AlertTriangle } from "lucide-react";
 import client from "../api/client.js";
 
 const PROMPTS = [
@@ -12,24 +12,22 @@ const PROMPTS = [
 ];
 
 export default function Verify() {
-  const navigate        = useNavigate();
-  const [params]        = useSearchParams();
-  const nextPage        = params.get("next") || "/dashboard";
-  const context         = params.get("action") === "confirm" ? "transfer" : "login";
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const nextPage = params.get("next") || "/dashboard";
+  const context  = params.get("action") === "confirm" ? "transfer" : "login";
   const [failCount, setFailCount] = useState(0);
   const MAX_FAILS = 3;
 
-  // Pick a random prompt each time
   const prompt = useRef(PROMPTS[Math.floor(Math.random() * PROMPTS.length)]).current;
 
-  const [typedText,  setTypedText]  = useState("");
-  const [loading,    setLoading]    = useState(false);
-  const [result,     setResult]     = useState(null); // null | "genuine" | "imposter"
-  const [confidence, setConfidence] = useState(null);
+  const [typedText,   setTypedText]   = useState("");
+  const [loading,     setLoading]     = useState(false);
+  const [verifyData,  setVerifyData]  = useState(null); // full server response, or null while typing
 
-  const keyDownRef    = useRef({});
-  const keyLog        = useRef([]);
-  const startTimeRef  = useRef(null);
+  const keyDownRef   = useRef({});
+  const keyLog       = useRef([]);
+  const startTimeRef = useRef(null);
 
   const handleKeyDown = (e) => {
     keyDownRef.current[e.key] = performance.now();
@@ -39,7 +37,6 @@ export default function Verify() {
     const now  = performance.now();
     const down = keyDownRef.current[e.key];
     if (!down) return;
-
     const log = keyLog.current;
     log.push({
       key:    e.key,
@@ -55,7 +52,7 @@ export default function Verify() {
 
     setLoading(true);
     const durationMs = startTimeRef.current ? performance.now() - startTimeRef.current : 0;
-    const wpm        = (typedText.trim().split(" ").length / (durationMs / 60000)) || 0;
+    const wpm = (typedText.trim().split(" ").length / (durationMs / 60000)) || 0;
 
     try {
       const { data } = await client.post("/behavior/verify", {
@@ -65,35 +62,38 @@ export default function Verify() {
         context,
       });
 
-      setResult(data.prediction);
-      setConfidence(data.confidence);
+      setVerifyData(data);
 
-      if (data.prediction === "genuine" || data.fallback) {
+      const passed = data.prediction === "genuine" || data.fallback || data.model_trained === false;
+
+      if (passed) {
         setTimeout(() => navigate(nextPage), 1500);
-      } 
-      else {
-        // Imposter
+      } else {
         const newFailCount = failCount + 1;
         setFailCount(newFailCount);
-        setResult("imposter");
-        setConfidence(data.confidence);
-      
         if (newFailCount >= MAX_FAILS) {
-          // Hard block — clear session and send to login
           setTimeout(() => {
             localStorage.clear();
             navigate("/login?reason=security");
           }, 2000);
         }
       }
-
     } catch {
-      // On error fail open
       setTimeout(() => navigate(nextPage), 1000);
     } finally {
       setLoading(false);
     }
   };
+
+  const resetAttempt = () => {
+    setVerifyData(null);
+    setTypedText("");
+    keyLog.current = [];
+    startTimeRef.current = null;
+  };
+
+  const passed = verifyData && (verifyData.prediction === "genuine" || verifyData.fallback || verifyData.model_trained === false);
+  const failed = verifyData && !passed;
 
   return (
     <div className="min-h-screen bg-grid flex items-center justify-center p-4"
@@ -115,15 +115,13 @@ export default function Verify() {
 
         <div className="glass rounded-2xl p-7 space-y-5">
 
-          {/* Prompt */}
           <div className="p-4 rounded-xl text-center"
                style={{ background: "rgba(0,212,255,0.04)", border: "1px solid rgba(0,212,255,0.12)" }}>
             <p className="text-xs text-slate-500 mb-2 uppercase tracking-wide">Type this phrase</p>
             <p className="text-lg font-mono font-semibold text-white tracking-wide">{prompt}</p>
           </div>
 
-          {/* Input */}
-          {result === null && (
+          {!verifyData && (
             <div className="space-y-2">
               <input
                 autoFocus
@@ -151,54 +149,65 @@ export default function Verify() {
             </div>
           )}
 
-          {/* Result */}
-          {result === "genuine" && (
+          {/* A real model check actually ran and passed */}
+          {passed && verifyData.model_trained === true && !verifyData.fallback && (
             <div className="flex items-center gap-3 p-4 rounded-xl"
                  style={{ background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.2)" }}>
               <CheckCircle size={18} style={{ color: "#34d399" }} />
               <div>
                 <p className="text-sm font-semibold text-white">Identity Verified</p>
-                {confidence && (
-                  <p className="text-xs text-slate-400 font-num">Confidence: {(confidence * 100).toFixed(1)}%</p>
+                {verifyData.confidence != null && (
+                  <p className="text-xs text-slate-400 font-num">Confidence: {(verifyData.confidence * 100).toFixed(1)}%</p>
                 )}
               </div>
             </div>
           )}
 
-            {result === "imposter" && (
+          {/* Passed only because no check actually ran — untrained model or ML unreachable */}
+          {passed && (verifyData.model_trained === false || verifyData.fallback) && (
+            <div className="flex items-center gap-3 p-4 rounded-xl"
+                 style={{ background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)" }}>
+              <AlertTriangle size={18} style={{ color: "#fbbf24" }} />
+              <div>
+                <p className="text-sm font-semibold text-white">Proceeding without a behavioral check</p>
+                <p className="text-xs text-slate-400">
+                  {verifyData.model_trained === false
+                    ? "No trained model for this account yet — set one up on the Security page."
+                    : "Verification service is unreachable right now — no check could be run."}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* A real model check ran and rejected it */}
+          {failed && (
             <div className="space-y-3">
-                <div className="flex items-center gap-3 p-4 rounded-xl"
-                    style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)" }}>
+              <div className="flex items-center gap-3 p-4 rounded-xl"
+                   style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.2)" }}>
                 <XCircle size={18} style={{ color: "#f87171" }} />
                 <div>
-                    <p className="text-sm font-semibold text-white">Verification Failed</p>
-                    <p className="text-xs text-slate-400">
+                  <p className="text-sm font-semibold text-white">Verification Failed</p>
+                  <p className="text-xs text-slate-400">
                     {failCount >= MAX_FAILS
-                        ? "Too many failed attempts — logging out..."
-                        : `Typing pattern mismatch. ${MAX_FAILS - failCount} attempt${MAX_FAILS - failCount === 1 ? "" : "s"} remaining.`}
-                    </p>
-                    {confidence && (
+                      ? "Too many failed attempts — logging out..."
+                      : `Typing pattern mismatch. ${MAX_FAILS - failCount} attempt${MAX_FAILS - failCount === 1 ? "" : "s"} remaining.`}
+                  </p>
+                  {verifyData.confidence != null && (
                     <p className="text-xs text-slate-500 font-num mt-1">
-                        Confidence: {(confidence * 100).toFixed(1)}% (need ≥50%)
+                      Confidence: {(verifyData.confidence * 100).toFixed(1)}% (need ≥50%)
                     </p>
-                    )}
+                  )}
                 </div>
-                </div>
-                {failCount < MAX_FAILS && (
-                <button className="neo-btn w-full" onClick={() => {
-                    setResult(null);
-                    setTypedText("");
-                    keyLog.current = [];
-                    startTimeRef.current = null;
-                }}>
-                    Try Again
+              </div>
+              {failCount < MAX_FAILS && (
+                <button className="neo-btn w-full" onClick={resetAttempt}>
+                  Try Again
                 </button>
-                )}
+              )}
             </div>
-            )}
+          )}
 
-          {/* Submit */}
-          {result === null && (
+          {!verifyData && (
             <button
               className="neo-btn w-full"
               onClick={handleSubmit}
